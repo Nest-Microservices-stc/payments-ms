@@ -1,22 +1,26 @@
-import { Injectable } from '@nestjs/common';
-import { envs } from 'src/config';
+import { Injectable, Logger, Inject } from '@nestjs/common';
+import { envs, SERVICES } from 'src/config';
 import Stripe from 'stripe';
 import { CreateSessionDto } from './dto/create-session.dto';
 import { Request, Response } from 'express';
+import { ClientProxy } from '@nestjs/microservices';
 
 @Injectable()
 export class PaymentsService {
-
+    
+    private readonly logger = new Logger(PaymentsService.name);
     private readonly stripe = new Stripe(envs.stripeSecret)
 
-    constructor() { }
+    constructor(
+        @Inject(SERVICES.NATS_SERVICE) private readonly client: ClientProxy
+    ) {}
 
     async createPaymentSession(createSessionDto: CreateSessionDto) {
         const { currency, items, orderId } = createSessionDto;
 
         const lineItems = items.map(item => ({
             price_data: {
-                currency,
+                currency: currency.toLowerCase(),
                 product_data: {
                     name: item.name
                 },
@@ -35,7 +39,11 @@ export class PaymentsService {
             cancel_url: envs.stripeCancelUrl,
         })
 
-        return session
+        return {
+            url: session.url,
+            cancelUrl: session.cancel_url,
+            successUrl: session.success_url,
+        }
     }
 
 
@@ -46,7 +54,6 @@ export class PaymentsService {
         }
 
         let event: Stripe.Event;
-
         
         const endpointSecret = envs.stripeEndpointSecret;
         
@@ -58,16 +65,18 @@ export class PaymentsService {
         }
 
         switch (event.type) {
-            case 'payment_intent.succeeded': {
-                const paymentIntent = event.data.object as Stripe.PaymentIntent;
-                console.log('✅ PaymentIntent succeeded:', {
-                    metadata: paymentIntent.metadata,
-                    orderId: paymentIntent.metadata?.orderId
-                });
+            case 'charge.succeeded': {
+                const paymentIntent = event.data.object
+                const payload = {
+                    stripePaymentId: paymentIntent.id,
+                    orderId: paymentIntent.metadata.orderId,
+                    receiptUrl: paymentIntent.receipt_url,
+                }
+                this.client.emit('payment.succeeded', payload);
                 break;
             }
             default:
-                console.log(`Unhandled event type: ${event.type}`);
+                this.logger.warn(`Unhandled event type: ${event.type}`);
         }
 
         return response.status(200).json(sig)
