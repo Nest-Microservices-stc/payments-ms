@@ -49,10 +49,8 @@ export class PaymentsService {
 
     async stripeWebhook(request: Request, response: Response) {
         const sig = request.headers['stripe-signature'];
-        if (!sig) {
-            return response.status(400).json({ error: 'No Stripe signature found' });
-        }
-
+        if (!sig) return response.status(400).json({ error: 'No Stripe signature found' });
+        
         let event: Stripe.Event;
         
         const endpointSecret = envs.stripeEndpointSecret;
